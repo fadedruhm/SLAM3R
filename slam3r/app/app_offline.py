@@ -6,12 +6,14 @@ import numpy as np
 import tempfile
 import functools
 import subprocess
+import matplotlib.pyplot as plt
 
 from slam3r.pipeline.recon_offline_pipeline import get_img_tokens, initialize_scene, adapt_keyframe_stride, i2p_inference_batch, l2w_inference, normalize_views, scene_frame_retrieve
 from slam3r.datasets.wild_seq import Seq_Data
 from slam3r.models import Local2WorldModel, Image2PointsModel
 from slam3r.utils.device import to_numpy
 from slam3r.utils.recon_utils import *
+from slam3r.utils.geometry import inv
 
 def extract_frames(video_path: str, fps: float) -> str:
     temp_dir = tempfile.mkdtemp()
@@ -25,13 +27,13 @@ def extract_frames(video_path: str, fps: float) -> str:
     subprocess.run(command, check=True)
     return temp_dir
 
-def recon_scene(i2p_model:Image2PointsModel, 
-                l2w_model:Local2WorldModel, 
-                device, save_dir, fps, 
-                img_dir_or_list, 
+def recon_scene(i2p_model:Image2PointsModel,
+                l2w_model:Local2WorldModel,
+                device, save_dir, fps,
+                img_dir_or_list,
                 keyframe_stride, win_r, initial_winsize, conf_thres_i2p,
                 num_scene_frame, update_buffer_intv, buffer_strategy, buffer_size,
-                conf_thres_l2w, num_points_save):
+                conf_thres_l2w, num_points_save, save_traj=False):
     # print(f"device: {device},\n save_dir: {save_dir},\n fps: {fps},\n keyframe_stride: {keyframe_stride},\n win_r: {win_r},\n initial_winsize: {initial_winsize},\n conf_thres_i2p: {conf_thres_i2p},\n num_scene_frame: {num_scene_frame},\n update_buffer_intv: {update_buffer_intv},\n buffer_strategy: {buffer_strategy},\n buffer_size: {buffer_size},\n conf_thres_l2w: {conf_thres_l2w},\n num_points_save: {num_points_save}")
     np.random.seed(42)
     
@@ -311,25 +313,27 @@ def recon_scene(i2p_model:Image2PointsModel,
 
     per_frame_res['rgb_imgs'] = rgb_imgs
 
-    save_path = get_model_from_scene(per_frame_res=per_frame_res, 
-                                     save_dir=save_dir, 
-                                     num_points_save=num_points_save, 
-                                     conf_thres_res=conf_thres_l2w)
+    save_path = get_model_from_scene(per_frame_res=per_frame_res,
+                                     save_dir=save_dir,
+                                     num_points_save=num_points_save,
+                                     conf_thres_res=conf_thres_l2w,
+                                     save_traj=save_traj)
 
     return save_path, per_frame_res
     
     
-def get_model_from_scene(per_frame_res, save_dir, 
-                         num_points_save=200000, 
-                         conf_thres_res=3, 
-                         valid_masks=None
-                        ):  
-        
+def get_model_from_scene(per_frame_res, save_dir,
+                         num_points_save=200000,
+                         conf_thres_res=3,
+                         valid_masks=None,
+                         save_traj=False
+                        ):
+
     # collect the registered point clouds and rgb colors
     pcds = []
     rgbs = []
     pred_frame_num = len(per_frame_res['l2w_pcds'])
-    registered_confs = per_frame_res['l2w_confs']   
+    registered_confs = per_frame_res['l2w_confs']
     registered_pcds = per_frame_res['l2w_pcds']
     rgb_imgs = per_frame_res['rgb_imgs']
     for i in range(pred_frame_num):
@@ -340,31 +344,31 @@ def get_model_from_scene(per_frame_res, save_dir,
         rgb = rgb_imgs[i].reshape(-1,3)
         pcds.append(registered_pcd)
         rgbs.append(rgb)
-        
+
     res_pcds = np.concatenate(pcds, axis=0)
     res_rgbs = np.concatenate(rgbs, axis=0)
-    
+
     pts_count = len(res_pcds)
     valid_ids = np.arange(pts_count)
-    
+
     # filter out points with gt valid masks
     if valid_masks is not None:
         valid_masks = np.stack(valid_masks, axis=0).reshape(-1)
         # print('filter out ratio of points by gt valid masks:', 1.-valid_masks.astype(float).mean())
     else:
         valid_masks = np.ones(pts_count, dtype=bool)
-    
+
     # filter out points with low confidence
     if registered_confs is not None:
         conf_masks = []
         for i in range(len(registered_confs)):
             conf = registered_confs[i]
-            conf_mask = (conf > conf_thres_res).reshape(-1).cpu() 
+            conf_mask = (conf > conf_thres_res).reshape(-1).cpu()
             conf_masks.append(conf_mask)
         conf_masks = np.array(torch.cat(conf_masks))
         valid_ids = valid_ids[conf_masks&valid_masks]
         print('ratio of points filered out: {:.2f}%'.format((1.-len(valid_ids)/pts_count)*100))
-    
+
     # sample from the resulting pcd consisting of all frames
     n_samples = min(num_points_save, len(valid_ids))
     print(f"resampling {n_samples} points from {len(valid_ids)} points")
@@ -372,14 +376,116 @@ def get_model_from_scene(per_frame_res, save_dir,
     sampled_pts = res_pcds[sampled_idx]
     sampled_rgbs = res_rgbs[sampled_idx]
     sampled_pts[..., 1:] *= -1 # flip the axis for better visualization
-    
+
     save_name = f"recon.glb"
     scene = trimesh.Scene()
     scene.add_geometry(trimesh.PointCloud(vertices=sampled_pts, colors=sampled_rgbs/255.))
     save_path = join(save_dir, save_name)
     scene.export(save_path)
 
+    # save camera trajectory
+    if save_traj:
+        try:
+            # estimate intrinsics for each frame
+            intrinsics = []
+            for i in range(pred_frame_num):
+                pts3d_local = per_frame_res['i2p_pcds'][i]
+                # Add batch dimension if needed (estimate_intrinsics expects 4D input)
+                if len(pts3d_local.shape) == 3:
+                    pts3d_local = pts3d_local.unsqueeze(0)
+                intrinsic = estimate_intrinsics(pts3d_local)
+                intrinsics.append(intrinsic)
+            
+            # save trajectory
+            save_traj_file(per_frame_res, pred_frame_num, save_dir, 
+                          scene_id="scene", intrinsics=intrinsics)
+            print(f"Camera trajectory saved to {save_dir}")
+        except Exception as e:
+            print(f"Failed to save camera trajectory: {e}")
+
     return save_path
+
+
+def save_traj_file(views, pred_frame_num, save_dir, scene_id, intrinsics=None):
+    """Save camera trajectory to a txt file.
+    
+    Args:
+        views: list of view dictionaries containing pts3d_world
+        pred_frame_num: number of frames to save
+        save_dir: directory to save the trajectory file
+        scene_id: prefix for the trajectory filename
+        intrinsics: list of camera intrinsic matrices (3x3) for each frame
+    """
+    import cv2
+    
+    save_name = f"{scene_id}_traj.txt"
+    
+    c2ws = []
+    H, W, _ = views['l2w_pcds'][0][0].shape
+    
+    for i in tqdm(range(pred_frame_num), desc="Saving camera trajectory"):
+        pts = to_numpy(views['l2w_pcds'][i][0])
+        u, v = np.meshgrid(np.arange(W), np.arange(H))
+        points_2d = np.stack((u, v), axis=-1)
+        dist_coeffs = np.zeros(4).astype(np.float32)
+        
+        # Use PnP-RANSAC to estimate camera pose
+        success, rotation_vector, translation_vector, inliers = cv2.solvePnPRansac(
+            pts.reshape(-1, 3).astype(np.float32),
+            points_2d.reshape(-1, 2).astype(np.float32),
+            intrinsics[i].astype(np.float32),
+            dist_coeffs)
+        
+        if not success:
+            print(f"Warning: Failed to estimate pose for frame {i}")
+            c2ws.append(np.eye(4))
+            continue
+            
+        rotation_matrix, _ = cv2.Rodrigues(rotation_vector)
+        # Extrinsic parameters (4x4 matrix)
+        extrinsic_matrix = np.hstack((rotation_matrix, translation_vector.reshape(-1, 1)))
+        extrinsic_matrix = np.vstack((extrinsic_matrix, [0, 0, 0, 1]))
+        c2w = inv(extrinsic_matrix)
+        c2ws.append(c2w)
+    
+    c2ws = np.stack(c2ws, axis=0)
+    translations = c2ws[:, :3, 3]
+    
+    # draw the trajectory in horizontal plane
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    plot_traj(ax, [i for i in range(len(translations))], translations,
+              '-', "black", "estimate trajectory")
+    ax.set_xlabel('x [m]')
+    ax.set_ylabel('y [m]')
+    plt.savefig(join(save_dir, save_name.replace('.txt', '.png')), dpi=90)
+    plt.close()
+    
+    # Save trajectory as txt file (each row is a 4x4 matrix flattened to 16 values)
+    np.savetxt(join(save_dir, save_name), c2ws.reshape(-1, 16))
+    print(f"Trajectory saved to {join(save_dir, save_name)}")
+
+
+def plot_traj(ax, stamps, traj, style, color, label):
+    """Plot a trajectory using matplotlib."""
+    stamps.sort()
+    interval = np.median([s-t for s, t in zip(stamps[1:], stamps[:-1])])
+    x = []
+    y = []
+    last = stamps[0]
+    for i in range(len(stamps)):
+        if stamps[i]-last < 2*interval:
+            x.append(traj[i][0])
+            y.append(traj[i][1])
+        elif len(x) > 0:
+            ax.plot(x, y, style, color=color, label=label)
+            label = ""
+            x = []
+            y = []
+        last = stamps[i]
+    if len(x) > 0:
+        ax.plot(x, y, style, color=color, label=label)
+
 
 def display_inputs(images):
     img_label = "Click or use the left/right arrow keys to browse images", 
@@ -543,18 +649,23 @@ def main_demo(i2p_model, l2w_model, device, tmpdirname, server_name, server_port
             with gradio.Row():
                 # adjust the confidence threshold
                 conf_thres_l2w = gradio.Slider(value=12, minimum=1., maximum=100,
-                                      interactive=True, 
+                                      interactive=True,
                                       label="confidence threshold for the result",
                                       )
                 # adjust the camera size in the output pointcloud
                 num_points_save = gradio.Number(value=1000000, precision=0, minimum=1,
-                                      interactive=True, 
+                                      interactive=True,
                                       label="number of points sampled from the result",
+                                      )
+                # option to save camera trajectory
+                save_traj = gradio.Checkbox(value=False,
+                                      interactive=True,
+                                      label="Save camera trajectory (txt + png)",
                                       )
 
             outmodel = gradio.Model3D(height=500,
-                                      clear_color=(0.,0.,0.,0.3)) 
-            
+                                      clear_color=(0.,0.,0.,0.3))
+
             # events
             inputfiles.change(display_inputs,
                                 inputs=[inputfiles],
@@ -572,13 +683,16 @@ def main_demo(i2p_model, l2w_model, device, tmpdirname, server_name, server_port
                           inputs=[tmpdir_name, video_extract_fps,
                                   inputfiles, kf_stride_fix, win_r, initial_winsize, conf_thres_i2p,
                                   num_scene_frame, update_buffer_intv, buffer_strategy, buffer_size,
-                                  conf_thres_l2w, num_points_save],
+                                  conf_thres_l2w, num_points_save, save_traj],
                           outputs=[outmodel, per_frame_res])
             conf_thres_l2w.release(fn=get_model_from_scene,
-                                 inputs=[per_frame_res, tmpdir_name, num_points_save, conf_thres_l2w],
+                                 inputs=[per_frame_res, tmpdir_name, num_points_save, conf_thres_l2w, save_traj],
                                  outputs=outmodel)
             num_points_save.change(fn=get_model_from_scene,
-                            inputs=[per_frame_res, tmpdir_name, num_points_save, conf_thres_l2w],
+                            inputs=[per_frame_res, tmpdir_name, num_points_save, conf_thres_l2w, save_traj],
+                            outputs=outmodel)
+            save_traj.change(fn=get_model_from_scene,
+                            inputs=[per_frame_res, tmpdir_name, num_points_save, conf_thres_l2w, save_traj],
                             outputs=outmodel)
 
     demo.launch(share=False, server_name=server_name, server_port=server_port)
