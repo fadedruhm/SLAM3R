@@ -381,7 +381,6 @@ def get_model_from_scene(per_frame_res, save_dir,
     scene = trimesh.Scene()
     scene.add_geometry(trimesh.PointCloud(vertices=sampled_pts, colors=sampled_rgbs/255.))
     save_path = join(save_dir, save_name)
-    scene.export(save_path)
 
     # save camera trajectory
     if save_traj:
@@ -397,12 +396,41 @@ def get_model_from_scene(per_frame_res, save_dir,
                 intrinsics.append(intrinsic)
             
             # save trajectory
-            save_traj_file(per_frame_res, pred_frame_num, save_dir, 
+            c2ws = save_traj_file(per_frame_res, pred_frame_num, save_dir, 
                           scene_id="scene", intrinsics=intrinsics)
+            
+            if c2ws is not None:
+                # 根据场景大小算出合适的摄像机显示比例
+                scale = np.percentile(np.linalg.norm(sampled_pts, axis=-1), 90) * 0.05
+                scale = max(0.01, scale)
+                for c2w in c2ws:
+                    # 相机外壳金字塔
+                    vertices = np.array([
+                        [0, 0, 0],
+                        [-scale*1.33, -scale, scale*2],
+                        [scale*1.33, -scale, scale*2],
+                        [scale*1.33, scale, scale*2],
+                        [-scale*1.33, scale, scale*2],
+                    ])
+                    faces = np.array([
+                        [0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1], [1, 3, 2], [1, 4, 3]
+                    ])
+                    mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+                    mesh.visual.vertex_colors = [255, 0, 0, 255] # 红色
+                    mesh.apply_transform(c2w)
+                    
+                    # 匹配前段对 sampled_pts 所做的坐标系翻转
+                    flip_mat = np.eye(4)
+                    flip_mat[1, 1] = -1
+                    flip_mat[2, 2] = -1
+                    mesh.apply_transform(flip_mat)
+                    
+                    scene.add_geometry(mesh)
             print(f"Camera trajectory saved to {save_dir}")
         except Exception as e:
             print(f"Failed to save camera trajectory: {e}")
 
+    scene.export(save_path)
     return save_path
 
 
@@ -464,6 +492,8 @@ def save_traj_file(views, pred_frame_num, save_dir, scene_id, intrinsics=None):
     # Save trajectory as txt file (each row is a 4x4 matrix flattened to 16 values)
     np.savetxt(join(save_dir, save_name), c2ws.reshape(-1, 16))
     print(f"Trajectory saved to {join(save_dir, save_name)}")
+    
+    return c2ws
 
 
 def plot_traj(ax, stamps, traj, style, color, label):
