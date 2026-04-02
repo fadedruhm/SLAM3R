@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Phase 3 - Ultimate Alignment</title>
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Cesium.js"></script>
+  <link href="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+  <style>
+    html, body, #cesiumContainer { width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden; }
+    #ui {
+        position: absolute;
+        top: 10px; left: 10px;
+        background: rgba(0,0,0,0.8);
+        color: white;
+        padding: 15px;
+        border-radius: 5px;
+        z-index: 100;
+        font-family: sans-serif;
+        max-width: 320px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.5);
+    }
+  </style>
+</head>
+<body>
+  <div id="ui">
+      <h2 style="margin-top:0">阶段三: 终极数字孪生</h2>
+      <p>已通过后端 Python (Umeyama 算法) 计算出了**尺度缩放**、**模型姿态**以及相对于第一个起飞坐标锚点的**物理偏移量**。</p>
+      <hr/>
+      <p id="stats" style="color: #4CAF50">正在加载并计算对齐矩阵...</p>
+      <p>请核实最后呈现的效果：</p>
+      <ul>
+        <li>点云模型及内嵌相机位姿是否完整嵌合在卫星地景里对应的高空位置？</li>
+        <li>黄色连线代表的是 GPS 路径，你可以直观看到 GPS 取样和我们算的外参到底有多少拟合偏差（MSE 约 21 米）。</li>
+      </ul>
+  </div>
+  <div id="cesiumContainer"></div>
+  <script>
+    // Cesium setup avoiding Ion
+    const viewer = new Cesium.Viewer('cesiumContainer', {
+      baseLayerPicker: false,
+      geocoder: false,
+      animation: false,
+      timeline: false,
+      infoBox: true,
+      imageryProvider: false
+    });
+    
+    Cesium.ArcGisMapServerImageryProvider.fromUrl(
+        'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer'
+    ).then(provider => {
+        viewer.imageryLayers.addImageryProvider(provider);
+    });
+
+    // Load Transform JSON calculated by align.py
+    fetch('tmp/phase3_transform.json')
+      .then(response => response.json())
+      .then(data => {
+          document.getElementById('stats').innerText = "加载就绪。\n正在挂载 recon.glb 以及轨迹...";
+
+          // The anchor where ENU frame was zero'd out
+          const anchorCartesian = Cesium.Cartesian3.fromDegrees(data.anchor.lon, data.anchor.lat, data.anchor.alt);
+          
+          // Matrix: ENU space -> ECEF Global Earth space
+          const enuToWorld = Cesium.Transforms.eastNorthUpToFixedFrame(anchorCartesian);
+          
+          // Matrix: SLAM local space -> ENU space
+          const localToEnu = Cesium.Matrix4.fromArray(data.transform_enu);
+          
+          // Ultimate Matrix: SLAM local -> ECEF Global
+          const finalModelMatrix = new Cesium.Matrix4();
+          Cesium.Matrix4.multiply(enuToWorld, localToEnu, finalModelMatrix);
+
+          // 1. ADD MODEL using raw primitive API to fully respect the 4x4 Scale-Rotation-Translation matrix
+          Cesium.Model.fromGltfAsync({
+              url: 'tmp/tmp713rmb5nslam3r_gradio_demo/recon.glb',
+              modelMatrix: finalModelMatrix,
+              scale: 1.0,
+          }).then(model => {
+              viewer.scene.primitives.add(model);
+          }).catch(err => console.error(err));
+
+          // 2. Fetch origin SLAM positions to draw the corrected camera trajectory explicitly overlaying the glb
+          fetch('tmp/tmp713rmb5nslam3r_gradio_demo/scene_traj.txt')
+            .then(res => res.text())
+            .then(txt => {
+                const lines = txt.trim().split('\n');
+                const pathEnuPositions = [];
+                const gpsProm = fetch('tmp/gps_path.json').then(r => r.json()); // get GPS to draw for comparison
+
+                lines.forEach(line => {
+                    if (!line.trim()) return;
+                    const vals = line.trim().split(' ').map(parseFloat);
+                    
+                    // We deduced this raw mapping in Phase 1
+                    let localPoint = new Cesium.Cartesian3(vals[3], vals[7], vals[11]);
+                    
+                    // Apply Phase 1 Rotations: X=-90, Z=90
+                    const rx = Cesium.Math.toRadians(-90);
+                    const ry = Cesium.Math.toRadians(0);
+                    const rz = Cesium.Math.toRadians(90);
+                    const userRotMat = new Cesium.Matrix3();
+                    let temp = new Cesium.Matrix3();
+                    Cesium.Matrix3.multiply(Cesium.Matrix3.fromRotationZ(rz), Cesium.Matrix3.fromRotationY(ry), temp);
+                    Cesium.Matrix3.multiply(temp, Cesium.Matrix3.fromRotationX(rx), userRotMat);
+                    
+                    let correctedLocal = new Cesium.Cartesian3();
+                    Cesium.Matrix3.multiplyByVector(userRotMat, localPoint, correctedLocal);
+
+                    // Transform via our computed Matrix4
+                    let earthPoint = new Cesium.Cartesian3();
+                    Cesium.Matrix4.multiplyByPoint(finalModelMatrix, correctedLocal, earthPoint);
+                    pathEnuPositions.push(earthPoint);
+                    
+                    viewer.entities.add({
+                        position: earthPoint,
+                        point: { pixelSize: 8, color: Cesium.Color.ORANGE, outlineColor: Cesium.Color.BLACK, outlineWidth: 1 }
+                    });
+                });
+
+                // Orange line for the calculated SLAM trajectory
+                viewer.entities.add({
+                    polyline: {
+                        positions: pathEnuPositions,
+                        width: 3,
+                        material: Cesium.Color.ORANGE
+                    }
+                });
+
+                // Also draw raw GPS data as Yellow line for visual difference inspection
+                gpsProm.then(pts => {
+                    const gpsPts = [];
+                    pts.forEach(p => {
+                        let c = Cesium.Cartesian3.fromDegrees(p.lon, p.lat, p.alt);
+                        gpsPts.push(c);
+                        viewer.entities.add({
+                            position: c,
+                            point: { pixelSize: 6, color: Cesium.Color.YELLOW }
+                        });
+                    });
+                     viewer.entities.add({
+                        polyline: {
+                            positions: gpsPts,
+                            width: 2,
+                            material: new Cesium.PolylineDashMaterialProperty({ color: Cesium.Color.YELLOW })
+                        }
+                    });
+                });
+
+                // Move camera dynamically to the anchor
+                viewer.camera.flyTo({
+                    destination: Cesium.Cartesian3.fromDegrees(data.anchor.lon, data.anchor.lat, data.anchor.alt + 800),
+                    orientation: {
+                        heading: Cesium.Math.toRadians(0),
+                        pitch: Cesium.Math.toRadians(-90),
+                        roll: 0.0
+                    }
+                });
+            });
+
+      })
+      .catch(err => {
+          document.getElementById('stats').innerText = '遇到错误: ' + err;
+      });
+  </script>
+</body>
+</html>
