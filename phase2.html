@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Phase 2 - Raw GPS Validation</title>
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Cesium.js"></script>
+  <link href="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+  <style>
+    html, body, #cesiumContainer { width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden; }
+    #ui {
+        position: absolute;
+        top: 10px; left: 10px;
+        background: rgba(0,0,0,0.7);
+        color: white;
+        padding: 15px;
+        border-radius: 5px;
+        z-index: 100;
+        font-family: sans-serif;
+        max-width: 300px;
+    }
+  </style>
+</head>
+<body>
+  <div id="ui">
+      <h2>阶段二: 原生GPS轨迹校验</h2>
+      <p>⚠️ 这里没有任何重建模型，仅单纯将提取出的原图(EXIF)所在的经、纬度、海拔，原封不动地绘制到全球卫星地图上。</p>
+      <p>绿点表示起飞/第一个拍照点。</p>
+      <hr/>
+      <p>请你在地图上放大缩小，核对以下问题：</p>
+      <ul>
+        <li>这片区域是不是你们起飞航拍时所在的真实地理位置？</li>
+        <li>相机的飞行路线是否有极端的漂移点或杂散点？</li>
+      </ul>
+      <p id="status" style="color:#2ba2ff">加载中...</p>
+  </div>
+  <div id="cesiumContainer"></div>
+  <script>
+    // Use ArcGIS Satellite Maps to completely bypass Cesium Ion token errors and display real terrain
+    const viewer = new Cesium.Viewer('cesiumContainer', {
+      baseLayerPicker: false,
+      geocoder: false,
+      animation: false,
+      timeline: false,
+      infoBox: true,
+      imageryProvider: false // Prevent default Bing maps initialization
+    });
+    
+    // Add ArcGIS satellite imagery dynamically
+    Cesium.ArcGisMapServerImageryProvider.fromUrl(
+        'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer'
+    ).then(provider => {
+        viewer.imageryLayers.addImageryProvider(provider);
+    }).catch(err => {
+        console.error("Failed to load satellite map:", err);
+    });
+
+    fetch('tmp/gps_path.json')
+      .then(response => response.json())
+      .then(points => {
+        document.getElementById('status').innerText = `已载入 ${points.length} 个 GPS 点。`;
+        
+        const pathPositions = [];
+        
+        points.forEach((pt, index) => {
+            const worldPos = Cesium.Cartesian3.fromDegrees(pt.lon, pt.lat, pt.alt);
+            pathPositions.push(worldPos);
+
+            // Add points
+            viewer.entities.add({
+                position: worldPos,
+                description: `File: ${pt.file}<br/>Lon: ${pt.lon}<br/>Lat: ${pt.lat}<br/>Alt: ${pt.alt}`,
+                point: {
+                    pixelSize: index === 0 ? 15 : 10,
+                    color: index === 0 ? Cesium.Color.LIME : Cesium.Color.RED,
+                    outlineColor: Cesium.Color.WHITE,
+                    outlineWidth: 2
+                }
+            });
+        });
+
+        // Add line
+        const pathEntity = viewer.entities.add({
+            polyline: {
+                positions: pathPositions,
+                width: 4,
+                material: new Cesium.PolylineDashMaterialProperty({
+                    color: Cesium.Color.YELLOW
+                })
+            }
+        });
+
+        // Zoom to track
+        viewer.zoomTo(viewer.entities);
+      })
+      .catch(err => {
+          document.getElementById('status').innerText = '加载失败: ' + err;
+          console.error(err);
+      });
+
+  </script>
+</body>
+</html>
