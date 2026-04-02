@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Phase 1 - SLAM3R Local Data Validation</title>
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Cesium.js"></script>
+  <link href="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+  <style>
+    html, body, #cesiumContainer { width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden; }
+    #ui {
+        position: absolute;
+        top: 10px; left: 10px;
+        background: rgba(0,0,0,0.7);
+        color: white;
+        padding: 15px;
+        border-radius: 5px;
+        z-index: 100;
+        font-family: sans-serif;
+    }
+    input[type=range] { width: 250px; }
+  </style>
+</head>
+<body>
+  <div id="ui">
+      <h2>阶段一: 相对位置校验与打轴修正</h2>
+      <p>⚠️ 由于底层各种第三方库对坐标轴（Y向上 vs Z向上）导出时存在诡异映射，</p>
+      <p>在此直接开放三个轴的旋转控制器，调整红点序列，使得其包裹/穿过红色相机图标！</p>
+      <hr/>
+      <label><strong>X轴 旋转: </strong><span id="valX">0</span> 度</label><br/>
+      <input type="range" id="rotX" min="-180" max="180" value="0" step="1" oninput="updateTransforms()"><br/>
+      
+      <label><strong>Y轴 旋转: </strong><span id="valY">0</span> 度</label><br/>
+      <input type="range" id="rotY" min="-180" max="180" value="0" step="1" oninput="updateTransforms()"><br/>
+      
+      <label><strong>Z轴 旋转: </strong><span id="valZ">0</span> 度</label><br/>
+      <input type="range" id="rotZ" min="-180" max="180" value="0" step="1" oninput="updateTransforms()"><br/>
+  </div>
+  <div id="cesiumContainer"></div>
+  <script>
+    const viewer = new Cesium.Viewer('cesiumContainer', {
+      animation: false,
+      timeline: false,
+      infoBox: false
+    });
+
+    // Anchor point
+    const anchor = Cesium.Cartesian3.fromDegrees(116.40, 39.90, 500);
+    const heading = Cesium.Math.toRadians(0);
+    const pitch = Cesium.Math.toRadians(0);
+    const roll = Cesium.Math.toRadians(0);
+    const hpr = new Cesium.HeadingPitchRoll(heading, pitch, roll);
+    const orientation = Cesium.Transforms.headingPitchRollQuaternion(anchor, hpr);
+
+    // Load bare model (recon.glb)
+    const modelEntity = viewer.entities.add({
+      name: 'Recon Model',
+      position: anchor,
+      orientation: orientation,
+      model: {
+        uri: 'tmp/tmp713rmb5nslam3r_gradio_demo/recon.glb',
+        scale: 1.0,
+        minimumPixelSize: 32
+      }
+    });
+
+    viewer.zoomTo(modelEntity);
+
+    // Add Coordinate Axes (X: Red, Y: Green, Z: Blue)
+    const localToFixedForAxes = Cesium.Transforms.eastNorthUpToFixedFrame(anchor);
+    viewer.scene.primitives.add(new Cesium.DebugModelMatrixPrimitive({
+      modelMatrix: localToFixedForAxes,
+      length: 2.0, // 根据原点发射出 2米的轴供参考
+      width: 4.0
+    }));
+    
+    // UI legend for axes
+    const legend = document.createElement('div');
+    legend.innerHTML = `<hr/><strong>坐标系参考坐标轴：</strong><br/>
+      <span style="color:red">■</span> X轴 (指向模型原点的东方) <br/>
+      <span style="color:green">■</span> Y轴 (指向模型原点的北方) <br/>
+      <span style="color:#2ba2ff">■</span> Z轴 (指向模型原点的正上天顶)`;
+    document.getElementById('ui').appendChild(legend);
+
+    let rawPositions = [];
+    let trajEntities = [];
+
+    function updateTransforms() {
+        const rx = parseFloat(document.getElementById('rotX').value);
+        const ry = parseFloat(document.getElementById('rotY').value);
+        const rz = parseFloat(document.getElementById('rotZ').value);
+        
+        document.getElementById('valX').innerText = rx;
+        document.getElementById('valY').innerText = ry;
+        document.getElementById('valZ').innerText = rz;
+        
+        // Remove old painted entities
+        trajEntities.forEach(e => viewer.entities.remove(e));
+        trajEntities = [];
+        
+        const pathPositions = [];
+        const localToFixed = Cesium.Transforms.eastNorthUpToFixedFrame(anchor);
+        
+        // Build rotation matrix (Z * Y * X)
+        let tempRot = new Cesium.Matrix3();
+        let userRot = new Cesium.Matrix3();
+        
+        const mx = Cesium.Matrix3.fromRotationX(Cesium.Math.toRadians(rx));
+        const my = Cesium.Matrix3.fromRotationY(Cesium.Math.toRadians(ry));
+        const mz = Cesium.Matrix3.fromRotationZ(Cesium.Math.toRadians(rz));
+        
+        Cesium.Matrix3.multiply(mz, my, tempRot);
+        Cesium.Matrix3.multiply(tempRot, mx, userRot);
+        
+        // Apply rotation and transform to global earth frame
+        rawPositions.forEach(localPoint => {
+            const rotatedLocal = new Cesium.Cartesian3();
+            Cesium.Matrix3.multiplyByVector(userRot, localPoint, rotatedLocal);
+            
+            const worldPoint = new Cesium.Cartesian3();
+            Cesium.Matrix4.multiplyByPoint(localToFixed, rotatedLocal, worldPoint);
+            pathPositions.push(worldPoint);
+            
+            const pt = viewer.entities.add({
+                position: worldPoint,
+                point: {
+                  pixelSize: 8,
+                  color: Cesium.Color.RED,
+                  outlineColor: Cesium.Color.WHITE,
+                  outlineWidth: 2
+                }
+            });
+            trajEntities.push(pt);
+        });
+        
+        const line = viewer.entities.add({
+            polyline: {
+                positions: pathPositions,
+                width: 3,
+                material: new Cesium.PolylineDashMaterialProperty({
+                    color: Cesium.Color.YELLOW
+                })
+            }
+        });
+        trajEntities.push(line);
+    }
+
+    // Fetch local trajectory data
+    fetch('tmp/tmp713rmb5nslam3r_gradio_demo/scene_traj.txt')
+      .then(response => response.text())
+      .then(text => {
+        const lines = text.trim().split('\n');
+        lines.forEach(line => {
+          if(!line.trim()) return;
+          const vals = line.trim().split(' ').map(parseFloat);
+          rawPositions.push(new Cesium.Cartesian3(vals[3], vals[7], vals[11]));
+        });
+        
+        // Trigger drawing for the first time
+        updateTransforms();
+      }).catch(err => console.log('Failed to fetch trajectory:', err));
+
+  </script>
+</body>
+</html>
