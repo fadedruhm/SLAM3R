@@ -145,6 +145,8 @@ We also provide two Gradio interfaces for online/offline reconstruction respecti
 The offline interface can be launched with the following command:
 
  ```bash
+ $env:NO_PROXY="localhost,127.0.0.1,::1"
+ #vpn开全局模式的时候输入上面那个命令
  python app.py
  ```
 
