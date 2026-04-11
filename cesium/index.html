@@ -1,0 +1,919 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cesium GLB 手动摆放工具</title>
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Cesium.js"></script>
+  <link href="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+  <style>
+    :root {
+      --panel-bg: rgba(12, 18, 28, 0.9);
+      --panel-border: rgba(255, 255, 255, 0.15);
+      --text-main: #f4f7fb;
+      --text-subtle: #b8c2d4;
+      --accent: #3ad29f;
+      --danger: #ff6b6b;
+    }
+
+    * { box-sizing: border-box; }
+
+    html,
+    body,
+    #cesiumContainer {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+
+    body {
+      background: radial-gradient(circle at 20% 10%, #27415f, #101926 55%, #090d14);
+    }
+
+    #panel {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      width: min(390px, calc(100% - 24px));
+      max-height: calc(100% - 24px);
+      overflow: auto;
+      z-index: 10;
+      padding: 14px;
+      border: 1px solid var(--panel-border);
+      border-radius: 14px;
+      background: var(--panel-bg);
+      backdrop-filter: blur(5px);
+      color: var(--text-main);
+      box-shadow: 0 12px 28px rgba(0, 0, 0, 0.4);
+    }
+
+    h1 {
+      margin: 0 0 10px 0;
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: 0.2px;
+    }
+
+    p.tip {
+      margin: 0 0 10px 0;
+      color: var(--text-subtle);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .section {
+      margin-top: 12px;
+      border-top: 1px dashed rgba(255, 255, 255, 0.16);
+      padding-top: 12px;
+    }
+
+    .section h2 {
+      margin: 0 0 8px 0;
+      font-size: 15px;
+      font-weight: 600;
+      color: #ecf5ff;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 112px 1fr;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .row label {
+      font-size: 13px;
+      color: #dce7fa;
+    }
+
+    select {
+      width: 100%;
+      padding: 7px 8px;
+      border-radius: 7px;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      background: rgba(255, 255, 255, 0.06);
+      color: #fff;
+      outline: none;
+    }
+
+    select:focus {
+      border-color: var(--accent);
+    }
+
+    input[type="number"],
+    input[type="text"] {
+      width: 100%;
+      padding: 7px 8px;
+      border-radius: 7px;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      background: rgba(255, 255, 255, 0.06);
+      color: #fff;
+      outline: none;
+    }
+
+    input[type="number"]:focus,
+    input[type="text"]:focus {
+      border-color: var(--accent);
+    }
+
+    input[type="file"] {
+      width: 100%;
+      color: var(--text-subtle);
+      font-size: 12px;
+      margin-top: 4px;
+    }
+
+    .actions {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+      margin-top: 6px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 8px;
+      padding: 8px 10px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      color: #0d1725;
+      background: linear-gradient(135deg, #45e0ad, #2dc4d8);
+    }
+
+    button.secondary {
+      color: #e9f1ff;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    button.warn {
+      color: #fff;
+      background: linear-gradient(135deg, #ff7f7f, #ff5f5f);
+    }
+
+    #status {
+      margin-top: 10px;
+      padding: 7px 8px;
+      border-radius: 7px;
+      background: rgba(58, 210, 159, 0.12);
+      border: 1px solid rgba(58, 210, 159, 0.25);
+      color: #d6fff2;
+      font-size: 12px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+    }
+
+    .legend {
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--text-subtle);
+      line-height: 1.4;
+    }
+
+    @media (max-width: 768px) {
+      #panel {
+        top: auto;
+        bottom: 8px;
+        left: 8px;
+        right: 8px;
+        width: auto;
+        max-height: 60%;
+      }
+
+      .row {
+        grid-template-columns: 102px 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="panel">
+    <h1>Cesium GLB 手动摆放工具</h1>
+    <p class="tip">默认采用 ArcGIS 世界影像底图，避免 Cesium Ion 401 和低空放大丢图问题。</p>
+
+    <div class="section">
+      <h2>1) 模型</h2>
+      <div class="row">
+        <label for="modelSelector">当前模型</label>
+        <select id="modelSelector"></select>
+      </div>
+      <div class="actions" style="margin-top: 2px; margin-bottom: 8px;">
+        <button id="addModelBtn" class="secondary">新增模型</button>
+        <button id="removeModelBtn" class="warn">删除当前模型</button>
+      </div>
+      <div class="row">
+        <label for="modelName">模型名称</label>
+        <input id="modelName" type="text" value="模型 1" />
+      </div>
+      <div class="row">
+        <label for="modelUri">模型 URI</label>
+        <input id="modelUri" type="text" value="../tmp/tmp713rmb5nslam3r_gradio_demo/recon.glb" />
+      </div>
+      <label for="modelFile" style="font-size: 12px; color: var(--text-subtle);">或选择本地 GLB 文件</label>
+      <input id="modelFile" type="file" accept=".glb,.gltf,model/gltf-binary,model/gltf+json" />
+      <div class="actions" style="margin-top: 10px;">
+        <button id="loadModelBtn">加载/应用当前模型</button>
+        <button id="flyBtn" class="secondary">飞到当前模型</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>2) 位置和姿态</h2>
+      <div class="row"><label for="lon">经度 (deg)</label><input id="lon" type="number" step="0.00001" value="126.681632" /></div>
+      <div class="row"><label for="lat">纬度 (deg)</label><input id="lat" type="number" step="0.00001" value="45.776638" /></div>
+      <div class="row"><label for="height">高度 (m)</label><input id="height" type="number" step="10" value="80" /></div>
+      <div class="row"><label for="heading">Heading (deg)</label><input id="heading" type="number" step="1" value="0" /></div>
+      <div class="row"><label for="pitch">Pitch (deg)</label><input id="pitch" type="number" step="1" value="0" /></div>
+      <div class="row"><label for="roll">Roll (deg)</label><input id="roll" type="number" step="1" value="0" /></div>
+      <div class="row"><label for="spinEarthAxis">球心轴旋转 (deg)</label><input id="spinEarthAxis" type="number" step="1" value="0" /></div>
+      <div class="row"><label for="scale">缩放</label><input id="scale" type="number" min="0.0001" step="1" value="1" /></div>
+      <div class="actions">
+        <button id="applyBtn">应用参数</button>
+        <button id="fromCamBtn" class="secondary">使用当前视角中心</button>
+      </div>
+      <div class="actions">
+        <button id="pickBtn" class="secondary">点击地图放置</button>
+        <button id="saveBtn">保存全部模型到缓存</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>3) 坐标系与保存</h2>
+      <div class="row">
+        <label for="axisVisible">显示坐标轴</label>
+        <input id="axisVisible" type="checkbox" checked style="justify-self: start;" />
+      </div>
+      <div class="row">
+        <label for="axisLength">轴长度 (m)</label>
+        <input id="axisLength" type="number" min="0.1" step="0.5" value="8" />
+      </div>
+      <div class="actions">
+        <button id="loadSavedBtn" class="secondary">读取缓存</button>
+        <button id="exportBtn">导出全部模型 JSON</button>
+      </div>
+      <div class="actions">
+        <button id="importBtn" class="secondary">导入配置 JSON</button>
+        <button id="removeAxesBtn" class="secondary">隐藏全部坐标轴</button>
+      </div>
+      <input id="importFile" type="file" accept="application/json" style="display:none" />
+      <div class="legend">坐标轴颜色: X 红 / Y 绿 / Z 蓝</div>
+    </div>
+
+    <div id="status">等待操作...</div>
+  </div>
+
+  <div id="cesiumContainer"></div>
+
+  <script>
+    let viewer;
+    let pickMode = false;
+    let realtimeTimer = null;
+    const storageKey = "cesium-model-placement-config";
+    const uploadApiPath = "/api/upload-model";
+
+    const defaultUri = "../tmp/tmp713rmb5nslam3r_gradio_demo/recon.glb";
+    const modelEntities = new Map();
+    const axisEntitiesMap = new Map();
+
+    const state = {
+      activeModelId: null,
+      models: []
+    };
+
+    function byId(id) {
+      return document.getElementById(id);
+    }
+
+    function setStatus(msg, isError) {
+      const el = byId("status");
+      el.textContent = msg;
+      if (isError) {
+        el.style.background = "rgba(255,107,107,0.12)";
+        el.style.borderColor = "rgba(255,107,107,0.35)";
+        el.style.color = "#ffd6d6";
+      } else {
+        el.style.background = "rgba(58,210,159,0.12)";
+        el.style.borderColor = "rgba(58,210,159,0.25)";
+        el.style.color = "#d6fff2";
+      }
+    }
+
+    async function uploadLocalModelToServer(file) {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch(uploadApiPath, {
+        method: "POST",
+        body: formData
+      });
+
+      if (!response.ok) {
+        throw new Error("上传失败，HTTP " + response.status + "。请使用 cesium/server.py 启动服务。");
+      }
+
+      const payload = await response.json();
+      if (!payload.ok || !payload.path) {
+        throw new Error(payload.error || "上传接口返回异常");
+      }
+
+      return payload;
+    }
+
+    function newModelConfig(index) {
+      return {
+        id: "model-" + Date.now() + "-" + Math.floor(Math.random() * 10000),
+        name: "模型 " + index,
+        uri: defaultUri,
+        modelPath: defaultUri,
+        lon: 126.681632,
+        lat: 45.776638,
+        height: 80,
+        heading: 0,
+        pitch: 0,
+        roll: 0,
+        spinEarthAxis: 0,
+        scale: 1,
+        axisVisible: true,
+        axisLength: 8
+      };
+    }
+
+    function normalizeModel(model, idx) {
+      const hydrated = newModelConfig(idx + 1);
+      Object.assign(hydrated, model || {});
+      hydrated.id = hydrated.id || ("model-" + Date.now() + "-" + idx);
+      hydrated.name = hydrated.name || ("模型 " + (idx + 1));
+      hydrated.uri = hydrated.uri || hydrated.modelPath || defaultUri;
+      hydrated.modelPath = hydrated.modelPath || hydrated.uri;
+
+      if ((hydrated.uri && hydrated.uri.indexOf("blob:") === 0) ||
+          (hydrated.modelPath && hydrated.modelPath.indexOf("blob:") === 0)) {
+        hydrated.uri = defaultUri;
+        hydrated.modelPath = defaultUri;
+      }
+
+      return hydrated;
+    }
+
+    function getActiveModel() {
+      return state.models.find(function(m) { return m.id === state.activeModelId; }) || null;
+    }
+
+    function renderModelSelector() {
+      const selector = byId("modelSelector");
+      selector.innerHTML = "";
+      state.models.forEach(function(m, idx) {
+        const option = document.createElement("option");
+        option.value = m.id;
+        option.textContent = (idx + 1) + ". " + m.name;
+        selector.appendChild(option);
+      });
+
+      if (state.activeModelId && state.models.some(function(m) { return m.id === state.activeModelId; })) {
+        selector.value = state.activeModelId;
+      }
+    }
+
+    function writeModelToInputs(model) {
+      if (!model) {
+        return;
+      }
+      byId("modelName").value = model.name;
+      byId("modelUri").value = model.uri || "";
+      byId("lon").value = model.lon;
+      byId("lat").value = model.lat;
+      byId("height").value = model.height;
+      byId("heading").value = model.heading;
+      byId("pitch").value = model.pitch;
+      byId("roll").value = model.roll;
+      byId("spinEarthAxis").value = model.spinEarthAxis;
+      byId("scale").value = model.scale;
+      byId("axisVisible").checked = Boolean(model.axisVisible);
+      byId("axisLength").value = model.axisLength;
+    }
+
+    function readInputsToActiveModel() {
+      const m = getActiveModel();
+      if (!m) {
+        throw new Error("没有可编辑的模型");
+      }
+      m.name = byId("modelName").value.trim() || m.name;
+      m.uri = byId("modelUri").value.trim();
+      m.modelPath = m.uri;
+      m.lon = Number(byId("lon").value);
+      m.lat = Number(byId("lat").value);
+      m.height = Number(byId("height").value);
+      m.heading = Number(byId("heading").value);
+      m.pitch = Number(byId("pitch").value);
+      m.roll = Number(byId("roll").value);
+      m.spinEarthAxis = Number(byId("spinEarthAxis").value);
+      m.scale = Number(byId("scale").value);
+      m.axisVisible = byId("axisVisible").checked;
+      m.axisLength = Number(byId("axisLength").value);
+    }
+
+    function validateModel(model) {
+      if (!model.uri) {
+        throw new Error("请填写模型 URI 或选择本地 GLB 文件");
+      }
+      model.modelPath = model.uri;
+      if (!Number.isFinite(model.lon) || !Number.isFinite(model.lat)) {
+        throw new Error("经纬度必须是有效数字");
+      }
+      if (!Number.isFinite(model.height)) {
+        throw new Error("高度必须是有效数字");
+      }
+      if (!Number.isFinite(model.heading) || !Number.isFinite(model.pitch) || !Number.isFinite(model.roll)) {
+        throw new Error("姿态角必须是有效数字");
+      }
+      if (!Number.isFinite(model.spinEarthAxis)) {
+        throw new Error("球心轴旋转必须是有效数字");
+      }
+      if (!Number.isFinite(model.scale) || model.scale <= 0) {
+        throw new Error("缩放必须大于 0");
+      }
+      if (!Number.isFinite(model.axisLength) || model.axisLength <= 0) {
+        throw new Error("轴长度必须大于 0");
+      }
+    }
+
+    function buildTransform(model) {
+      const position = Cesium.Cartesian3.fromDegrees(model.lon, model.lat, model.height);
+      const hpr = new Cesium.HeadingPitchRoll(
+        Cesium.Math.toRadians(model.heading),
+        Cesium.Math.toRadians(model.pitch),
+        Cesium.Math.toRadians(model.roll)
+      );
+      const orientationHpr = Cesium.Transforms.headingPitchRollQuaternion(position, hpr);
+
+      const axis = Cesium.Cartesian3.normalize(position, new Cesium.Cartesian3());
+      const earthAxisSpin = Cesium.Quaternion.fromAxisAngle(axis, Cesium.Math.toRadians(model.spinEarthAxis));
+      const orientation = Cesium.Quaternion.multiply(earthAxisSpin, orientationHpr, new Cesium.Quaternion());
+
+      const rotMat = Cesium.Matrix3.fromQuaternion(orientation);
+      const frame = Cesium.Matrix4.fromRotationTranslation(rotMat, position);
+      const modelMatrix = Cesium.Matrix4.clone(frame);
+      Cesium.Matrix4.multiplyByUniformScale(modelMatrix, model.scale, modelMatrix);
+      return { position, orientation, modelMatrix };
+    }
+
+    function ensureModelEntity(model) {
+      let entity = modelEntities.get(model.id);
+      if (!entity) {
+        entity = viewer.entities.add({
+          name: model.name,
+          model: {
+            uri: model.uri,
+            scale: model.scale,
+            minimumPixelSize: 0,
+            maximumScale: 1000000
+          }
+        });
+        modelEntities.set(model.id, entity);
+      }
+      entity.name = model.name;
+      entity.model.uri = model.uri;
+      entity.model.scale = model.scale;
+      return entity;
+    }
+
+    function clearAxesForModel(modelId) {
+      const axes = axisEntitiesMap.get(modelId) || [];
+      axes.forEach(function(entity) {
+        viewer.entities.remove(entity);
+      });
+      axisEntitiesMap.set(modelId, []);
+    }
+
+    function updateAxesForModel(model, modelMatrix) {
+      clearAxesForModel(model.id);
+      if (!model.axisVisible) {
+        return;
+      }
+
+      const origin = Cesium.Matrix4.getTranslation(modelMatrix, new Cesium.Cartesian3());
+      const xEnd = Cesium.Matrix4.multiplyByPoint(modelMatrix, new Cesium.Cartesian3(model.axisLength, 0, 0), new Cesium.Cartesian3());
+      const yEnd = Cesium.Matrix4.multiplyByPoint(modelMatrix, new Cesium.Cartesian3(0, model.axisLength, 0), new Cesium.Cartesian3());
+      const zEnd = Cesium.Matrix4.multiplyByPoint(modelMatrix, new Cesium.Cartesian3(0, 0, model.axisLength), new Cesium.Cartesian3());
+
+      const axes = [
+        viewer.entities.add({ polyline: { positions: [origin, xEnd], width: 3, material: Cesium.Color.RED } }),
+        viewer.entities.add({ polyline: { positions: [origin, yEnd], width: 3, material: Cesium.Color.LIME } }),
+        viewer.entities.add({ polyline: { positions: [origin, zEnd], width: 3, material: Cesium.Color.CYAN } })
+      ];
+      axisEntitiesMap.set(model.id, axes);
+    }
+
+    function applyModel(model) {
+      if (!model.uri && model.modelPath) {
+        model.uri = model.modelPath;
+      }
+      validateModel(model);
+      const tf = buildTransform(model);
+      const entity = ensureModelEntity(model);
+      entity.position = tf.position;
+      entity.orientation = tf.orientation;
+      entity.model.scale = model.scale;
+      updateAxesForModel(model, tf.modelMatrix);
+    }
+
+    function applyFromInputs(silentStatus) {
+      try {
+        readInputsToActiveModel();
+        const model = getActiveModel();
+        applyModel(model);
+        renderModelSelector();
+        if (!silentStatus) {
+          setStatus("当前模型参数已应用，并实时更新到数字地球。", false);
+        }
+      } catch (err) {
+        setStatus("应用失败: " + err.message, true);
+      }
+    }
+
+    function applyAllModels() {
+      state.models.forEach(function(model) {
+        try {
+          applyModel(model);
+        } catch (_) {
+          // Skip invalid models while applying batch.
+        }
+      });
+    }
+
+    function addModel() {
+      const model = newModelConfig(state.models.length + 1);
+      state.models.push(model);
+      state.activeModelId = model.id;
+      renderModelSelector();
+      writeModelToInputs(model);
+      applyFromInputs(false);
+      setStatus("已新增一个模型，可与其他模型同时显示。", false);
+    }
+
+    function removeActiveModel() {
+      const model = getActiveModel();
+      if (!model) {
+        setStatus("没有可删除的模型。", true);
+        return;
+      }
+
+      const entity = modelEntities.get(model.id);
+      if (entity) {
+        viewer.entities.remove(entity);
+        modelEntities.delete(model.id);
+      }
+      clearAxesForModel(model.id);
+      axisEntitiesMap.delete(model.id);
+
+      state.models = state.models.filter(function(m) { return m.id !== model.id; });
+
+      if (state.models.length === 0) {
+        const newOne = newModelConfig(1);
+        state.models.push(newOne);
+        state.activeModelId = newOne.id;
+      } else {
+        state.activeModelId = state.models[0].id;
+      }
+
+      renderModelSelector();
+      writeModelToInputs(getActiveModel());
+      applyFromInputs(true);
+      setStatus("已删除当前模型。", false);
+    }
+
+    function flyToActiveModel() {
+      const model = getActiveModel();
+      if (!model) {
+        setStatus("请先创建模型。", true);
+        return;
+      }
+      const entity = modelEntities.get(model.id);
+      if (!entity) {
+        setStatus("当前模型尚未加载，请先应用参数。", true);
+        return;
+      }
+      viewer.flyTo(entity, {
+        offset: new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-25), 80)
+      });
+    }
+
+    function hideAllAxes() {
+      state.models.forEach(function(model) {
+        model.axisVisible = false;
+        clearAxesForModel(model.id);
+      });
+      byId("axisVisible").checked = false;
+      setStatus("已隐藏全部模型坐标轴。", false);
+    }
+
+    function useCameraCenter() {
+      const c = viewer.camera.positionCartographic;
+      byId("lon").value = Cesium.Math.toDegrees(c.longitude).toFixed(7);
+      byId("lat").value = Cesium.Math.toDegrees(c.latitude).toFixed(7);
+      byId("height").value = Math.max(c.height - 40, 0).toFixed(2);
+      applyFromInputs(false);
+    }
+
+    function scheduleRealtimeApply() {
+      if (realtimeTimer) {
+        clearTimeout(realtimeTimer);
+      }
+      realtimeTimer = setTimeout(function() {
+        applyFromInputs(true);
+      }, 120);
+    }
+
+    function saveToLocal() {
+      try {
+        applyFromInputs(true);
+        const payload = {
+          activeModelId: state.activeModelId,
+          models: state.models.map(function(model) {
+            return {
+              id: model.id,
+              name: model.name,
+              uri: model.modelPath || model.uri,
+              modelPath: model.modelPath || model.uri,
+              lon: model.lon,
+              lat: model.lat,
+              height: model.height,
+              heading: model.heading,
+              pitch: model.pitch,
+              roll: model.roll,
+              spinEarthAxis: model.spinEarthAxis,
+              scale: model.scale,
+              axisVisible: model.axisVisible,
+              axisLength: model.axisLength
+            };
+          })
+        };
+        localStorage.setItem(storageKey, JSON.stringify(payload, null, 2));
+        setStatus("已保存全部模型到 localStorage。", false);
+      } catch (err) {
+        setStatus("保存失败: " + err.message, true);
+      }
+    }
+
+    function loadFromLocal() {
+      const raw = localStorage.getItem(storageKey);
+      if (!raw) {
+        setStatus("未找到本地缓存配置。", true);
+        return;
+      }
+      try {
+        const cfg = JSON.parse(raw);
+
+        // Backward compatibility for old single-model config.
+        if (Array.isArray(cfg.models)) {
+          state.models = cfg.models.map(function(model, idx) {
+            return normalizeModel(model, idx);
+          });
+          state.activeModelId = cfg.activeModelId || (cfg.models[0] && cfg.models[0].id);
+        } else {
+          const legacy = newModelConfig(1);
+          Object.assign(legacy, cfg);
+          legacy.id = legacy.id || ("legacy-" + Date.now());
+          legacy.name = legacy.name || "模型 1";
+          legacy.uri = legacy.uri || legacy.modelPath || defaultUri;
+          legacy.modelPath = legacy.uri;
+          state.models = [legacy];
+          state.activeModelId = legacy.id;
+        }
+
+        renderModelSelector();
+        writeModelToInputs(getActiveModel());
+        applyAllModels();
+        applyFromInputs(true);
+        setStatus("已读取缓存，所有模型已恢复。", false);
+      } catch (err) {
+        setStatus("读取本地缓存失败: " + err.message, true);
+      }
+    }
+
+    function exportConfig() {
+      try {
+        applyFromInputs(true);
+        const payload = {
+          activeModelId: state.activeModelId,
+          models: state.models.map(function(model) {
+            return {
+              id: model.id,
+              name: model.name,
+              uri: model.modelPath || model.uri,
+              modelPath: model.modelPath || model.uri,
+              lon: model.lon,
+              lat: model.lat,
+              height: model.height,
+              heading: model.heading,
+              pitch: model.pitch,
+              roll: model.roll,
+              spinEarthAxis: model.spinEarthAxis,
+              scale: model.scale,
+              axisVisible: model.axisVisible,
+              axisLength: model.axisLength
+            };
+          })
+        };
+        const data = JSON.stringify(payload, null, 2);
+        const blob = new Blob([data], { type: "application/json" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "model_placement_config.json";
+        a.click();
+        URL.revokeObjectURL(a.href);
+        setStatus("配置已导出，包含所有模型参数。", false);
+      } catch (err) {
+        setStatus("导出失败: " + err.message, true);
+      }
+    }
+
+    function importConfigFile(file) {
+      const reader = new FileReader();
+      reader.onload = function() {
+        try {
+          const cfg = JSON.parse(String(reader.result));
+          if (!Array.isArray(cfg.models) || cfg.models.length === 0) {
+            throw new Error("导入 JSON 缺少 models 数组");
+          }
+          state.models = cfg.models.map(function(model, idx) {
+            return normalizeModel(model, idx);
+          });
+          state.activeModelId = cfg.activeModelId || cfg.models[0].id;
+          renderModelSelector();
+          writeModelToInputs(getActiveModel());
+          applyAllModels();
+          applyFromInputs(true);
+          setStatus("配置导入成功，已恢复多个模型。", false);
+        } catch (err) {
+          setStatus("导入失败: " + err.message, true);
+        }
+      };
+      reader.readAsText(file);
+    }
+
+    async function initViewer() {
+      viewer = new Cesium.Viewer("cesiumContainer", {
+        baseLayerPicker: false,
+        geocoder: false,
+        animation: false,
+        timeline: false,
+        infoBox: false,
+        homeButton: true,
+        selectionIndicator: false,
+        sceneModePicker: true,
+        navigationHelpButton: false,
+        fullscreenButton: false,
+        imageryProvider: false
+      });
+
+      try {
+        const provider = await Cesium.ArcGisMapServerImageryProvider.fromUrl(
+          "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer"
+        );
+        viewer.imageryLayers.addImageryProvider(provider);
+        setStatus("底图加载成功: ArcGIS World Imagery");
+      } catch (err) {
+        setStatus("底图加载失败: " + err.message, true);
+      }
+
+      viewer.scene.globe.depthTestAgainstTerrain = true;
+
+      const handler = new Cesium.ScreenSpaceEventHandler(viewer.canvas);
+      handler.setInputAction(function(click) {
+        if (!pickMode) {
+          return;
+        }
+        const cartesian = pickCartesian(click.position);
+        if (!cartesian) {
+          setStatus("未拾取到有效地面点，请换个角度重试。", true);
+          return;
+        }
+        const c = Cesium.Cartographic.fromCartesian(cartesian);
+        byId("lon").value = Cesium.Math.toDegrees(c.longitude).toFixed(7);
+        byId("lat").value = Cesium.Math.toDegrees(c.latitude).toFixed(7);
+        byId("height").value = c.height.toFixed(2);
+        pickMode = false;
+        byId("pickBtn").textContent = "点击地图放置";
+        applyFromInputs(false);
+      }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+      viewer.camera.flyTo({
+        destination: Cesium.Cartesian3.fromDegrees(126.681632, 45.776638, 2500),
+        orientation: {
+          heading: Cesium.Math.toRadians(0),
+          pitch: Cesium.Math.toRadians(-60),
+          roll: 0
+        }
+      });
+    }
+
+    function pickCartesian(screenPosition) {
+      if (viewer.scene.pickPositionSupported) {
+        const p = viewer.scene.pickPosition(screenPosition);
+        if (Cesium.defined(p)) {
+          return p;
+        }
+      }
+      return viewer.camera.pickEllipsoid(screenPosition, viewer.scene.globe.ellipsoid);
+    }
+
+    function bindEvents() {
+      byId("addModelBtn").addEventListener("click", addModel);
+      byId("removeModelBtn").addEventListener("click", removeActiveModel);
+      byId("modelSelector").addEventListener("change", function(evt) {
+        state.activeModelId = evt.target.value;
+        writeModelToInputs(getActiveModel());
+        setStatus("已切换当前模型。", false);
+      });
+
+      byId("loadModelBtn").addEventListener("click", function() { applyFromInputs(false); });
+      byId("applyBtn").addEventListener("click", function() { applyFromInputs(false); });
+      byId("flyBtn").addEventListener("click", flyToActiveModel);
+      byId("fromCamBtn").addEventListener("click", useCameraCenter);
+      byId("saveBtn").addEventListener("click", saveToLocal);
+      byId("loadSavedBtn").addEventListener("click", loadFromLocal);
+      byId("exportBtn").addEventListener("click", exportConfig);
+      byId("removeAxesBtn").addEventListener("click", hideAllAxes);
+
+      byId("importBtn").addEventListener("click", function() {
+        byId("importFile").click();
+      });
+      byId("importFile").addEventListener("change", function(evt) {
+        if (evt.target.files && evt.target.files[0]) {
+          importConfigFile(evt.target.files[0]);
+        }
+      });
+
+      byId("pickBtn").addEventListener("click", function() {
+        pickMode = !pickMode;
+        byId("pickBtn").textContent = pickMode ? "取消地图放置" : "点击地图放置";
+        setStatus(pickMode ? "请在地图上单击一个位置作为当前模型锚点。" : "已取消地图放置模式。", false);
+      });
+
+      byId("modelFile").addEventListener("change", async function(evt) {
+        const file = evt.target.files && evt.target.files[0];
+        if (!file) {
+          return;
+        }
+        try {
+          setStatus("正在上传并复制模型到 /cesium/models ...", false);
+          const result = await uploadLocalModelToServer(file);
+          byId("modelUri").value = result.path;
+          scheduleRealtimeApply();
+          setStatus("上传成功: " + result.path + "\n该路径会写入缓存和导出 JSON，可长期重载。", false);
+        } catch (err) {
+          setStatus("本地模型导入失败: " + err.message, true);
+        } finally {
+          byId("modelFile").value = "";
+        }
+      });
+
+      ["modelName", "modelUri", "lon", "lat", "height", "heading", "pitch", "roll", "spinEarthAxis", "scale", "axisLength"].forEach(function(id) {
+        byId(id).addEventListener("input", scheduleRealtimeApply);
+        byId(id).addEventListener("change", scheduleRealtimeApply);
+      });
+      byId("axisVisible").addEventListener("change", scheduleRealtimeApply);
+    }
+
+    async function main() {
+      await initViewer();
+
+      const cached = localStorage.getItem(storageKey);
+      if (cached) {
+        try {
+          const cfg = JSON.parse(cached);
+          if (Array.isArray(cfg.models) && cfg.models.length > 0) {
+            state.models = cfg.models.map(function(model, idx) {
+              return normalizeModel(model, idx);
+            });
+            state.activeModelId = cfg.activeModelId || cfg.models[0].id;
+          }
+        } catch (_) {
+          // Ignore broken cache and keep defaults.
+        }
+      }
+
+      if (state.models.length === 0) {
+        const first = newModelConfig(1);
+        state.models = [first];
+        state.activeModelId = first.id;
+      }
+
+      renderModelSelector();
+      writeModelToInputs(getActiveModel());
+      bindEvents();
+      applyAllModels();
+      applyFromInputs(true);
+      setStatus("已就绪。支持多个模型同时存在和实时参数更新。", false);
+    }
+
+    main();
+  </script>
+</body>
+</html>

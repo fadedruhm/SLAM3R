@@ -1,0 +1,37 @@
+{
+  "activeModelId": "model-1775820397848-1369",
+  "models": [
+    {
+      "id": "model-1775820397848-1369",
+      "name": "模型 1",
+      "uri": "/cesium/models/model_1.glb",
+      "modelPath": "/cesium/models/model_1.glb",
+      "lon": 126.680412,
+      "lat": 45.773238,
+      "height": 70,
+      "heading": 0,
+      "pitch": 23,
+      "roll": 0,
+      "spinEarthAxis": -124,
+      "scale": 121.0001,
+      "axisVisible": false,
+      "axisLength": 5.6
+    },
+    {
+      "id": "model-1775820575954-9169",
+      "name": "模型 2",
+      "uri": "/cesium/models/heu-dji-1-1_1.glb",
+      "modelPath": "/cesium/models/heu-dji-1-1_1.glb",
+      "lon": 126.671382,
+      "lat": 45.775208,
+      "height": 160,
+      "heading": 0,
+      "pitch": 46,
+      "roll": 0,
+      "spinEarthAxis": 183,
+      "scale": 251.0001,
+      "axisVisible": false,
+      "axisLength": 8
+    }
+  ]
+}
