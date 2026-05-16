@@ -400,9 +400,9 @@ def get_model_from_scene(per_frame_res, save_dir,
                           scene_id="scene", intrinsics=intrinsics)
             
             if c2ws is not None:
-                # 根据场景大小算出合适的摄像机显示比例
-                scale = np.percentile(np.linalg.norm(sampled_pts, axis=-1), 90) * 0.05
-                scale = max(0.01, scale)
+                # 根据场景大小算出合适的摄像机显示比例（缩小到接近 Cesium 轨迹点大小）
+                scale = np.percentile(np.linalg.norm(sampled_pts, axis=-1), 90) * 0.005
+                scale = max(0.002, scale)
                 for c2w in c2ws:
                     # 相机外壳金字塔
                     vertices = np.array([

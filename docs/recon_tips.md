@@ -24,3 +24,18 @@ Your images should be consecutive frames (e.g., sampled from a video)with number
 SLAM3R's performance can degrade when processing sparse views with large viewpoint changes, low overlaps, or motion blur. In such cases, the default window size may include images that don't overlap enough, leading to reduced performance. This can also lead to incorrect retrievals, causing some frames to be registered outside the main reconstruction.
 
 Due to limited training data (currently only ScanNet++, Aria Synthetic Environments, and CO3D-v2), SLAM3R cannot process images with unfamiliar camera distortion and has poor performance with wide-angle cameras and panoramas. The system also struggles with dynamic scenes. 
+
+
+## Cesium visualization tip (glTF axis correction)
+
+When visualizing `recon.glb` and a camera trajectory (e.g., points from `scene_traj.txt`) in CesiumJS, you may see a confusing situation:
+
+- The model looks oriented “correctly”, but the plotted trajectory points are far away / rotated / drifting.
+
+In practice, this is often *not* a SLAM or export bug. It is commonly caused by Cesium applying an internal **glTF axis correction** during model loading (glTF is typically Y-up, while Cesium internally uses a different convention). If your points are plotted without applying the same correction, the model and points will not share the same transform chain.
+
+Recommendations:
+
+- Ensure the **same transform chain** is applied to both the model and the points (axis correction + user rotations + modelMatrix/anchor).
+- Avoid relying on private Cesium fields (e.g., `_axisCorrectionMatrix`), as they may not exist or may change across versions.
+- Avoid double-compensating (e.g., applying both a manual `X=-90°` *and* an axis correction that already covers the same rotation).
